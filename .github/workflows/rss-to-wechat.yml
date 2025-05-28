@@ -1,9 +1,9 @@
-name: RSS to WeChat
+name: RSS to WeChat Hourly
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *'  # 每小时 UTC 时间的 0 分运行（北京时间 8:00/16:00 等 +8小时）
+  workflow_dispatch:      # 保留手动触发功能
 
 jobs:
   rss-notify:
@@ -16,6 +16,13 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
+      - name: Cache pip packages  # 新增缓存优化步骤
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: pip install feedparser requests python-dotenv
@@ -33,68 +40,36 @@ jobs:
 
           PUSHPLUS_TOKEN = os.getenv('PUSHPLUS_TOKEN')
           RSS_URL = os.getenv('RSS_FEED_URL')
+          CHECK_HOURS = 1  # 修改为检查最近1小时内容
 
-          # 新增错误处理逻辑
-          try:
-              feed = feedparser.parse(RSS_URL)
-              
-              # 检测 RSS 解析错误
-              if feed.bozo:  # bozo=1 表示解析失败
-                  error_msg = f"❌ RSS 解析失败：{feed.bozo_exception}"
-                  requests.post(
-                      "https://www.pushplus.plus/send",
-                      json={
-                          "token": PUSHPLUS_TOKEN,
-                          "title": "RSS 监控异常",
-                          "content": error_msg,
-                          "template": "markdown"
-                      }
-                  )
-                  print("已发送错误通知")
-                  exit(1)
+          feed = feedparser.parse(RSS_URL)
+          latest_entries = []
+          now = datetime.now()
 
-              # 原有检查逻辑
-              CHECK_HOURS = 24
-              latest_entries = []
-              now = datetime.now()
+          for entry in feed.entries:
+              published_time = datetime(*entry.published_parsed[:6])
+              if now - published_time < timedelta(hours=CHECK_HOURS):
+                  latest_entries.append({
+                      'title': entry.title,
+                      'link': entry.link,
+                      'time': published_time.strftime("%Y-%m-%d %H:%M:%S")
+                  })
 
-              for entry in feed.entries:
-                  published_time = datetime(*entry.published_parsed[:6])
-                  if now - published_time < timedelta(hours=CHECK_HOURS):
-                      latest_entries.append({
-                          'title': entry.title,
-                          'link': entry.link,
-                          'time': published_time.strftime("%Y-%m-%d %H:%M:%S")
-                      })
+          if latest_entries:
+              message = f"📢 发现 {len(latest_entries)} 条新内容：\n\n"
+              for idx, item in enumerate(latest_entries, 1):
+                  message += f"{idx}. [{item['title']}]({item['link']})\n发布时间：{item['time']}\n\n"
 
-              if latest_entries:
-                  message = f"📢 发现 {len(latest_entries)} 条新内容：\n\n"
-                  for idx, item in enumerate(latest_entries, 1):
-                      message += f"{idx}. [{item['title']}]({item['link']})\n发布时间：{item['time']}\n\n"
-
-                  requests.post(
-                      "https://www.pushplus.plus/send",
-                      json={
-                          "token": PUSHPLUS_TOKEN,
-                          "title": "RSS 更新提醒",
-                          "content": message,
-                          "template": "markdown"
-                      }
-                  )
-                  print("推送成功！")
-              else:
-                  print("暂无新内容")
-
-          except Exception as e:
-              # 通用异常捕获
               requests.post(
                   "https://www.pushplus.plus/send",
                   json={
                       "token": PUSHPLUS_TOKEN,
-                      "title": "脚本运行异常",
-                      "content": f"❌ 发生未捕获错误：{str(e)}",
+                      "title": "RSS 更新提醒 (每小时检查)",
+                      "content": message,
                       "template": "markdown"
                   }
               )
-              raise e  # 抛出错误让 Actions 显示失败
+              print("推送成功！")
+          else:
+              print("暂无新内容")
           EOF
