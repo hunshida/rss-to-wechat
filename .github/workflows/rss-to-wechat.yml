@@ -25,5 +25,76 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}
         run: |
-          # 此处粘贴完整Python脚本（保持原样）
-          
+          python3 <<EOF
+          import feedparser
+          import requests
+          import os
+          from datetime import datetime, timedelta
+
+          PUSHPLUS_TOKEN = os.getenv('PUSHPLUS_TOKEN')
+          RSS_URL = os.getenv('RSS_FEED_URL')
+
+          # 新增错误处理逻辑
+          try:
+              feed = feedparser.parse(RSS_URL)
+              
+              # 检测 RSS 解析错误
+              if feed.bozo:  # bozo=1 表示解析失败
+                  error_msg = f"❌ RSS 解析失败：{feed.bozo_exception}"
+                  requests.post(
+                      "https://www.pushplus.plus/send",
+                      json={
+                          "token": PUSHPLUS_TOKEN,
+                          "title": "RSS 监控异常",
+                          "content": error_msg,
+                          "template": "markdown"
+                      }
+                  )
+                  print("已发送错误通知")
+                  exit(1)
+
+              # 原有检查逻辑
+              CHECK_HOURS = 24
+              latest_entries = []
+              now = datetime.now()
+
+              for entry in feed.entries:
+                  published_time = datetime(*entry.published_parsed[:6])
+                  if now - published_time < timedelta(hours=CHECK_HOURS):
+                      latest_entries.append({
+                          'title': entry.title,
+                          'link': entry.link,
+                          'time': published_time.strftime("%Y-%m-%d %H:%M:%S")
+                      })
+
+              if latest_entries:
+                  message = f"📢 发现 {len(latest_entries)} 条新内容：\n\n"
+                  for idx, item in enumerate(latest_entries, 1):
+                      message += f"{idx}. [{item['title']}]({item['link']})\n发布时间：{item['time']}\n\n"
+
+                  requests.post(
+                      "https://www.pushplus.plus/send",
+                      json={
+                          "token": PUSHPLUS_TOKEN,
+                          "title": "RSS 更新提醒",
+                          "content": message,
+                          "template": "markdown"
+                      }
+                  )
+                  print("推送成功！")
+              else:
+                  print("暂无新内容")
+
+          except Exception as e:
+              # 通用异常捕获
+              requests.post(
+                  "https://www.pushplus.plus/send",
+                  json={
+                      "token": PUSHPLUS_TOKEN,
+                      "title": "脚本运行异常",
+                      "content": f"❌ 发生未捕获错误：{str(e)}",
+                      "template": "markdown"
+                  }
+              )
+              raise e  # 抛出错误让 Actions 显示失败
+          EOF
